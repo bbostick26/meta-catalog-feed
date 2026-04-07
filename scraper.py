@@ -123,7 +123,13 @@ def scrape_inventory(url: str, dealer_name: str) -> list[dict]:
         formats=[JsonFormat(type="json", prompt=EXTRACT_PROMPT, schema=VEHICLE_SCHEMA)]
     )
 
-    result = app.crawl(url, limit=500, scrape_options=scrape_opts)
+    # Limit to 25 pages and stay within /inventory paths to avoid crawling the whole site
+    result = app.crawl(
+        url,
+        limit=25,
+        include_paths=["/inventory*"],
+        scrape_options=scrape_opts,
+    )
 
     vehicles = []
     for page in result.data:

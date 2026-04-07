@@ -128,9 +128,15 @@ def scrape_inventory(url: str, dealer_name: str) -> list[dict]:
     )
 
     vehicles = []
-    for page in result.get("data", []):
-        extracted = page.get("extract", {})
-        vehicles.extend(extracted.get("vehicles", []))
+    # firecrawl-py v1.x returns a Pydantic CrawlResponse; older versions return a dict
+    data = result.data if hasattr(result, "data") else result.get("data", [])
+    for page in data:
+        if hasattr(page, "extract"):
+            extracted = page.extract or {}
+        else:
+            extracted = page.get("extract", {})
+        if isinstance(extracted, dict):
+            vehicles.extend(extracted.get("vehicles", []))
 
     print(f"  → {len(vehicles)} vehicles scraped")
     return vehicles
@@ -277,7 +283,9 @@ def main():
             build_csv_feed(vehicles, output_path)
             summary.append((dealer_name, len(vehicles), "OK"))
         except Exception as e:
+            import traceback
             print(f"  ERROR scraping {dealer_name}: {e}")
+            traceback.print_exc()
             summary.append((dealer_name, 0, f"FAILED: {e}"))
 
     print("\n" + "=" * 60)

@@ -127,14 +127,14 @@ def discover_vdp_urls(app: FirecrawlApp, base_url: str) -> list[str]:
 
 
 def batch_scrape_vdps(app: FirecrawlApp, urls: list[str]) -> list[dict]:
-    """Batch scrape all VDPs in parallel and extract vehicle data."""
+    """Batch scrape all VDPs in parallel using fast_mode (no JS) for speed."""
     if not urls:
         return []
 
     result = app.batch_scrape(
         urls,
         formats=[JsonFormat(type="json", prompt=EXTRACT_PROMPT, schema=VEHICLE_SCHEMA)],
-        wait_for=2000,
+        fast_mode=True,  # skip JS rendering — all VDP data is in static HTML
         only_main_content=False,
     )
 

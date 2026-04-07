@@ -8,8 +8,6 @@ on:
 
 permissions:
   contents: write
-  pages: write
-  id-token: write
 
 jobs:
   generate:
@@ -44,28 +42,3 @@ jobs:
             git commit -m "chore: update catalog feeds $(date -u +'%Y-%m-%d %H:%M UTC')"
             git push
           fi
-
-  deploy-pages:
-    needs: generate
-    runs-on: ubuntu-latest
-    environment:
-      name: github-pages
-      url: ${{ steps.deployment.outputs.page_url }}
-
-    steps:
-      - name: Checkout repository
-        uses: actions/checkout@v4
-        with:
-          ref: main
-
-      - name: Setup Pages
-        uses: actions/configure-pages@v4
-
-      - name: Upload feeds as Pages artifact
-        uses: actions/upload-pages-artifact@v3
-        with:
-          path: feeds/
-
-      - name: Deploy to GitHub Pages
-        id: deployment
-        uses: actions/deploy-pages@v4

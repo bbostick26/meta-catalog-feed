@@ -8,6 +8,7 @@ import csv
 import os
 from datetime import datetime, timezone
 from firecrawl import FirecrawlApp
+from firecrawl.v2.types import ScrapeOptions, JsonFormat
 
 # ─── DEALERSHIPS ──────────────────────────────────────────────────────────────
 # Each entry: (Dealer Name, Inventory URL, Output filename)
@@ -66,75 +67,67 @@ CSV_COLUMNS = [
 
 
 # ─── SCRAPE ───────────────────────────────────────────────────────────────────
+VEHICLE_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "vehicles": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "stock_number":    {"type": "string"},
+                    "vin":             {"type": "string"},
+                    "year":            {"type": "string"},
+                    "make":            {"type": "string"},
+                    "model":           {"type": "string"},
+                    "trim":            {"type": "string"},
+                    "price":           {"type": "number"},
+                    "sale_price":      {"type": "number"},
+                    "mileage":         {"type": "string"},
+                    "condition":       {"type": "string"},
+                    "availability":    {"type": "string"},
+                    "exterior_color":  {"type": "string"},
+                    "interior_color":  {"type": "string"},
+                    "body_style":      {"type": "string"},
+                    "transmission":    {"type": "string"},
+                    "drivetrain":      {"type": "string"},
+                    "fuel_type":       {"type": "string"},
+                    "engine":          {"type": "string"},
+                    "description":     {"type": "string"},
+                    "image_url":       {"type": "string"},
+                    "video_url":       {"type": "string"},
+                    "detail_page_url": {"type": "string"},
+                },
+                "required": ["year", "make", "model", "price", "detail_page_url"]
+            }
+        }
+    },
+    "required": ["vehicles"]
+}
+
+EXTRACT_PROMPT = (
+    "Extract all vehicle listings from this dealership inventory page. "
+    "For each vehicle, extract all available details including stock number, "
+    "VIN, year, make, model, trim, price, mileage, condition (new/used), "
+    "exterior color, interior color, body style, transmission, drivetrain, "
+    "fuel type, engine, description, primary image URL, and the full URL "
+    "to the vehicle detail page."
+)
+
+
 def scrape_inventory(url: str, dealer_name: str) -> list[dict]:
     app = FirecrawlApp(api_key=FIRECRAWL_API_KEY)
     print(f"\n[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] Scraping {dealer_name}: {url}")
 
-    result = app.crawl_url(
-        url,
-        params={
-            "limit": 500,
-            "scrapeOptions": {
-                "formats": ["extract"],
-                "extract": {
-                    "prompt": (
-                        "Extract all vehicle listings from this dealership inventory page. "
-                        "For each vehicle, extract all available details including stock number, "
-                        "VIN, year, make, model, trim, price, mileage, condition (new/used), "
-                        "exterior color, interior color, body style, transmission, drivetrain, "
-                        "fuel type, engine, description, primary image URL, and the full URL "
-                        "to the vehicle detail page."
-                    ),
-                    "schema": {
-                        "type": "object",
-                        "properties": {
-                            "vehicles": {
-                                "type": "array",
-                                "items": {
-                                    "type": "object",
-                                    "properties": {
-                                        "stock_number":    {"type": "string"},
-                                        "vin":             {"type": "string"},
-                                        "year":            {"type": "string"},
-                                        "make":            {"type": "string"},
-                                        "model":           {"type": "string"},
-                                        "trim":            {"type": "string"},
-                                        "price":           {"type": "number"},
-                                        "sale_price":      {"type": "number"},
-                                        "mileage":         {"type": "string"},
-                                        "condition":       {"type": "string"},
-                                        "availability":    {"type": "string"},
-                                        "exterior_color":  {"type": "string"},
-                                        "interior_color":  {"type": "string"},
-                                        "body_style":      {"type": "string"},
-                                        "transmission":    {"type": "string"},
-                                        "drivetrain":      {"type": "string"},
-                                        "fuel_type":       {"type": "string"},
-                                        "engine":          {"type": "string"},
-                                        "description":     {"type": "string"},
-                                        "image_url":       {"type": "string"},
-                                        "video_url":       {"type": "string"},
-                                        "detail_page_url": {"type": "string"},
-                                    },
-                                    "required": ["year", "make", "model", "price", "detail_page_url"]
-                                }
-                            }
-                        },
-                        "required": ["vehicles"]
-                    }
-                }
-            }
-        }
+    scrape_opts = ScrapeOptions(
+        formats=[JsonFormat(type="json", prompt=EXTRACT_PROMPT, schema=VEHICLE_SCHEMA)]
     )
 
+    result = app.crawl(url, limit=500, scrape_options=scrape_opts)
+
     vehicles = []
-    # firecrawl-py v1.x returns a Pydantic CrawlResponse; older versions return a dict
-    data = result.data if hasattr(result, "data") else result.get("data", [])
-    for page in data:
-        if hasattr(page, "extract"):
-            extracted = page.extract or {}
-        else:
-            extracted = page.get("extract", {})
+    for page in result.data:
+        extracted = page.json if hasattr(page, "json") and page.json else {}
         if isinstance(extracted, dict):
             vehicles.extend(extracted.get("vehicles", []))
 

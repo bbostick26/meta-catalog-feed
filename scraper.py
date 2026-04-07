@@ -1,7 +1,6 @@
 """
 Meta Commerce Catalog Feed Generator — Parks Automotive Group
-Uses Firecrawl map() on root domain to discover all VDP URLs,
-then batch_scrape() each VDP for full vehicle data.
+Uses Firecrawl map() to discover VDP URLs, then extract() all vehicles in one API call per dealer.
 Runs daily via GitHub Actions — no local machine required.
 """
 
@@ -10,7 +9,6 @@ import os
 import re
 from datetime import datetime, timezone
 from firecrawl import FirecrawlApp
-from firecrawl.v2.types import JsonFormat
 
 # ─── DEALERSHIPS ──────────────────────────────────────────────────────────────
 DEALERSHIPS = [
@@ -41,125 +39,97 @@ CSV_COLUMNS = [
     "gtin", "product_tags[0]", "product_tags[1]", "style[0]",
 ]
 
-# VDP URL pattern: /inventory/<condition>-<year>-<make>-...-<VIN>/
-# VIN is always the last 17-char alphanumeric segment before the trailing slash
+# VDP URLs end with a 17-char VIN slug
 VDP_RE = re.compile(r'/inventory/[a-z]+-\d{4}-.+-([a-z0-9]{17})/?$', re.IGNORECASE)
 # ─────────────────────────────────────────────────────────────────────────────
 
 
-# ─── EXTRACTION SCHEMA (per VDP) ─────────────────────────────────────────────
+# ─── EXTRACTION SCHEMA ────────────────────────────────────────────────────────
 VEHICLE_SCHEMA = {
     "type": "object",
     "properties": {
-        "stock_number":    {"type": "string"},
-        "vin":             {"type": "string"},
-        "year":            {"type": "string"},
-        "make":            {"type": "string"},
-        "model":           {"type": "string"},
-        "trim":            {"type": "string"},
-        "body_style":      {"type": "string"},
-        "condition":       {"type": "string"},
-        "price":           {"type": "number"},
-        "sale_price":      {"type": "number"},
-        "mileage":         {"type": "string"},
-        "exterior_color":  {"type": "string"},
-        "interior_color":  {"type": "string"},
-        "transmission":    {"type": "string"},
-        "drivetrain":      {"type": "string"},
-        "fuel_type":       {"type": "string"},
-        "engine":          {"type": "string"},
-        "doors":           {"type": "string"},
-        "mpg_city":        {"type": "string"},
-        "mpg_highway":     {"type": "string"},
-        "certified":       {"type": "boolean"},
-        "description":     {"type": "string"},
-        "image_url":       {"type": "string"},
-        "video_url":       {"type": "string"},
+        "vehicles": {
+            "type": "array",
+            "items": {
+                "type": "object",
+                "properties": {
+                    "vin":             {"type": "string"},
+                    "stock_number":    {"type": "string"},
+                    "year":            {"type": "string"},
+                    "make":            {"type": "string"},
+                    "model":           {"type": "string"},
+                    "trim":            {"type": "string"},
+                    "body_style":      {"type": "string"},
+                    "condition":       {"type": "string"},
+                    "price":           {"type": "number"},
+                    "sale_price":      {"type": "number"},
+                    "mileage":         {"type": "string"},
+                    "exterior_color":  {"type": "string"},
+                    "interior_color":  {"type": "string"},
+                    "transmission":    {"type": "string"},
+                    "drivetrain":      {"type": "string"},
+                    "fuel_type":       {"type": "string"},
+                    "engine":          {"type": "string"},
+                    "mpg_city":        {"type": "string"},
+                    "mpg_highway":     {"type": "string"},
+                    "certified":       {"type": "boolean"},
+                    "image_url":       {"type": "string"},
+                    "detail_page_url": {"type": "string"},
+                },
+                "required": ["year", "make", "model"]
+            }
+        }
     },
-    "required": ["year", "make", "model"]
+    "required": ["vehicles"]
 }
 
-EXTRACT_PROMPT = """
-Extract details for the single vehicle shown on this Vehicle Detail Page (VDP).
-Capture every available field:
-- stock_number: dealer stock/unit number
-- vin: full 17-character VIN
-- year: model year (e.g. "2024")
-- make: manufacturer (e.g. "Chevrolet")
-- model: model name (e.g. "Silverado 1500")
-- trim: trim level (e.g. "LTZ", "Z71", "High Country")
-- body_style: (e.g. "Truck", "SUV", "Sedan", "Coupe", "Van", "Wagon")
-- condition: exactly "New", "Used", or "Certified Pre-Owned"
-- price: asking/internet price as a number (no symbols or commas)
-- sale_price: discounted/sale price if different from price, as a number
-- mileage: odometer as a string (e.g. "34,215")
-- exterior_color: full exterior color name (e.g. "Midnight Blue Metallic")
-- interior_color: interior/seat color name
-- transmission: (e.g. "10-Speed Automatic", "6-Speed Manual")
-- drivetrain: (e.g. "4WD", "AWD", "FWD", "RWD")
-- fuel_type: (e.g. "Gasoline", "Electric", "Hybrid", "Diesel")
-- engine: (e.g. "6.2L V8", "2.7L Turbocharged 4-Cylinder")
-- doors: number of doors as a string
-- mpg_city: city MPG as a string
-- mpg_highway: highway MPG as a string
-- certified: true if Certified Pre-Owned / CPO, false otherwise
-- description: marketing description or feature highlights
-- image_url: full URL of the primary vehicle photo
-- video_url: full URL of any vehicle video if present
-"""
+EXTRACT_PROMPT = (
+    "For each URL provided, visit that vehicle detail page and extract: "
+    "VIN, stock number, year, make, model, trim, body style, condition (New/Used/Certified Pre-Owned), "
+    "price, sale price (if different from price), mileage, exterior color, interior color, "
+    "transmission, drivetrain, fuel type, engine, MPG city, MPG highway, "
+    "certified (true if CPO, false otherwise), primary image URL, and the detail page URL. "
+    "Return all vehicles as an array."
+)
 
 
 # ─── SCRAPE ───────────────────────────────────────────────────────────────────
 def discover_vdp_urls(app: FirecrawlApp, base_url: str) -> list[str]:
-    """map() the root domain — VDP URLs containing a 17-char VIN are filtered out."""
+    """One map() call on the root domain to get all VDP URLs."""
     result = app.map(base_url, limit=500)
     all_urls = [lr.url for lr in result.links if hasattr(lr, "url")]
-    vdps = [u for u in all_urls if VDP_RE.search(u)]
-    # Deduplicate (trailing slash variants)
     seen, unique = set(), []
-    for u in vdps:
+    for u in all_urls:
+        if not VDP_RE.search(u):
+            continue
         key = u.rstrip("/")
         if key not in seen:
             seen.add(key)
             unique.append(u)
-    print(f"  → {len(unique)} VDP URLs discovered (from {len(all_urls)} total map results)")
+    print(f"  → {len(unique)} VDP URLs found (from {len(all_urls)} total)")
     return unique
 
 
-def batch_scrape_vdps(app: FirecrawlApp, urls: list[str]) -> list[dict]:
-    """Batch scrape all VDPs in parallel using fast_mode (no JS) for speed."""
+def extract_vehicles(app: FirecrawlApp, urls: list[str]) -> list[dict]:
+    """One extract() call for all VDPs — Firecrawl handles parallelism internally."""
     if not urls:
         return []
 
-    result = app.batch_scrape(
+    result = app.extract(
         urls,
-        formats=[JsonFormat(type="json", prompt=EXTRACT_PROMPT, schema=VEHICLE_SCHEMA)],
-        fast_mode=True,  # skip JS rendering — all VDP data is in static HTML
-        only_main_content=False,
+        prompt=EXTRACT_PROMPT,
+        schema=VEHICLE_SCHEMA,
     )
 
-    vehicles = []
-    data = result.data if hasattr(result, "data") else []
-    for i, page in enumerate(data):
-        extracted = page.json if hasattr(page, "json") and page.json else {}
-        if not isinstance(extracted, dict) or not extracted.get("year"):
-            continue
+    data = result.data if hasattr(result, "data") else result
+    if isinstance(data, dict):
+        vehicles = data.get("vehicles", [])
+    elif isinstance(data, list):
+        vehicles = data
+    else:
+        vehicles = []
 
-        # Attach source URL as detail_page_url
-        meta = page.metadata if hasattr(page, "metadata") else {}
-        extracted["detail_page_url"] = (
-            meta.get("sourceURL") or meta.get("url") or urls[i] if i < len(urls) else ""
-        )
-
-        # Fall back to VIN from URL if not extracted
-        if not extracted.get("vin"):
-            m = VDP_RE.search(extracted["detail_page_url"])
-            if m:
-                extracted["vin"] = m.group(1).upper()
-
-        vehicles.append(extracted)
-
-    print(f"  → {len(vehicles)} vehicles extracted from {len(data)} pages")
+    print(f"  → {len(vehicles)} vehicles extracted")
     return vehicles
 
 
@@ -168,9 +138,9 @@ def scrape_inventory(base_url: str, dealer_name: str) -> list[dict]:
     print(f"\n[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] {dealer_name}")
     vdp_urls = discover_vdp_urls(app, base_url)
     if not vdp_urls:
-        print("  → No VDP URLs found, skipping")
+        print("  → No VDPs found, skipping")
         return []
-    return batch_scrape_vdps(app, vdp_urls)
+    return extract_vehicles(app, vdp_urls)
 
 
 # ─── TRANSFORM ────────────────────────────────────────────────────────────────
@@ -201,9 +171,7 @@ def build_title(v: dict) -> str:
 
 
 def build_description(v: dict) -> str:
-    base = v.get("description", "").strip()
     specs = []
-
     condition_label = "Certified Pre-Owned" if v.get("certified") else (v.get("condition") or "")
     if condition_label:
         specs.append(condition_label)
@@ -232,9 +200,7 @@ def build_description(v: dict) -> str:
     if v.get("mpg_city") and v.get("mpg_highway"):
         specs.append(f"MPG: {v['mpg_city']} city / {v['mpg_highway']} hwy")
 
-    spec_block = " | ".join(specs)
-    combined = f"{base} | {spec_block}" if base and spec_block else (base or spec_block)
-    return combined[:9999]
+    return " | ".join(specs)[:9999]
 
 
 def build_item_group_id(v: dict) -> str:
@@ -290,7 +256,7 @@ def transform_vehicles(raw_vehicles: list[dict], dealer_name: str) -> list[dict]
             "pattern":                      "",
             "shipping":                     "",
             "shipping_weight":              "",
-            "video[0].url":                 (v.get("video_url") or "").strip(),
+            "video[0].url":                 "",
             "video[0].tag[0]":              "",
             "gtin":                         "",
             "product_tags[0]":              (v.get("body_style") or "")[:110],

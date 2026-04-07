@@ -1,6 +1,6 @@
 """
 Meta Commerce Catalog Feed Generator — Parks Automotive Group
-Scrapes all dealership inventories via Firecrawl and outputs one CSV feed per dealership.
+Scrapes new, used, and CPO inventory SRPs via Firecrawl and outputs one CSV per dealership.
 Runs daily via GitHub Actions — no local machine required.
 """
 
@@ -8,25 +8,32 @@ import csv
 import os
 from datetime import datetime, timezone
 from firecrawl import FirecrawlApp
-from firecrawl.v2.types import ScrapeOptions, JsonFormat
+from firecrawl.v2.types import JsonFormat
 
 # ─── DEALERSHIPS ──────────────────────────────────────────────────────────────
+# Base URLs only — inventory paths are appended automatically
 DEALERSHIPS = [
-    ("Parks Buick GMC",               "https://www.parksbuickgmc.com/inventory",               "parks_buick_gmc.csv"),
-    ("Parks Chevy Spartanburg",        "https://www.parkschevroletspartanburg.com/inventory",   "parks_chevy_spartanburg.csv"),
-    ("Parks Chevy Charlotte",          "https://www.parkscharlotte.com/inventory",              "parks_chevy_charlotte.csv"),
-    ("Parks Chevrolet Huntersville",   "https://www.parkschevrolethuntersville.com/inventory",  "parks_chevrolet_huntersville.csv"),
-    ("Parks Chevy Kernersville",       "https://www.parkschevy.com/inventory",                 "parks_chevy_kernersville.csv"),
-    ("Parks Ford Hendersonville",      "https://www.parksfordhendersonville.com/inventory",     "parks_ford_hendersonville.csv"),
-    ("Parks Richmond",                 "https://www.parksrichmond.com/inventory",               "parks_richmond.csv"),
-    ("Lake Norman CDJR",               "https://www.lakenormanchrysler.com/inventory",          "lake_norman_cdjr.csv"),
+    ("Parks Buick GMC",               "https://www.parksbuickgmc.com",               "parks_buick_gmc.csv"),
+    ("Parks Chevy Spartanburg",        "https://www.parkschevroletspartanburg.com",   "parks_chevy_spartanburg.csv"),
+    ("Parks Chevy Charlotte",          "https://www.parkscharlotte.com",              "parks_chevy_charlotte.csv"),
+    ("Parks Chevrolet Huntersville",   "https://www.parkschevrolethuntersville.com",  "parks_chevrolet_huntersville.csv"),
+    ("Parks Chevy Kernersville",       "https://www.parkschevy.com",                 "parks_chevy_kernersville.csv"),
+    ("Parks Ford Hendersonville",      "https://www.parksfordhendersonville.com",     "parks_ford_hendersonville.csv"),
+    ("Parks Richmond",                 "https://www.parksrichmond.com",               "parks_richmond.csv"),
+    ("Lake Norman CDJR",               "https://www.lakenormanchrysler.com",          "lake_norman_cdjr.csv"),
+]
+
+# All dealerships share the same platform — these paths exist on every site
+INVENTORY_PATHS = [
+    ("/new-vehicles/",          "New"),
+    ("/used-vehicles/",         "Used"),
+    ("/certified-pre-owned/",   "Certified Pre-Owned"),
 ]
 
 # ─── CONFIG ───────────────────────────────────────────────────────────────────
 FIRECRAWL_API_KEY = os.getenv("FIRECRAWL_API_KEY", "YOUR_API_KEY_HERE")
-CURRENCY  = "USD"
+CURRENCY   = "USD"
 OUTPUT_DIR = "feeds"
-CRAWL_LIMIT = 150  # pages per dealership — covers ~150-300 vehicles across paginated listings
 
 GOOGLE_PRODUCT_CATEGORY = "Vehicles & Parts > Vehicles > Motor Vehicles > Cars, Trucks & Vans"
 FB_PRODUCT_CATEGORY     = "Vehicles & Parts > Vehicles > Cars, Trucks & Vans"
@@ -86,8 +93,8 @@ VEHICLE_SCHEMA = {
 }
 
 EXTRACT_PROMPT = """
-You are extracting vehicle listings from a dealership inventory page.
-Extract EVERY vehicle visible on this page — do not skip any.
+You are extracting vehicle listings from a dealership inventory Search Results Page (SRP).
+Extract EVERY vehicle card visible on this page — do not skip any.
 For each vehicle capture:
 - stock_number: dealer stock/unit number
 - vin: full 17-character VIN if shown
@@ -97,57 +104,62 @@ For each vehicle capture:
 - trim: trim level (e.g. "LTZ", "Z71", "Premier")
 - body_style: body type (e.g. "Truck", "SUV", "Sedan", "Coupe", "Convertible", "Van", "Wagon")
 - condition: exactly one of "New", "Used", or "Certified Pre-Owned"
-- price: the listed asking/internet price as a number (no currency symbols)
-- sale_price: discounted/sale price if different from price, as a number
+- price: the listed asking/internet price as a number (no currency symbols or commas)
+- sale_price: discounted/sale price if shown separately from price, as a number
 - mileage: odometer reading as a string (e.g. "34,215")
 - exterior_color: full exterior color name (e.g. "Midnight Blue Metallic")
 - interior_color: interior/seat color name
-- transmission: transmission type (e.g. "10-Speed Automatic", "6-Speed Manual")
-- drivetrain: drive type (e.g. "4WD", "AWD", "FWD", "RWD")
-- fuel_type: fuel type (e.g. "Gasoline", "Electric", "Hybrid", "Diesel")
-- engine: engine description (e.g. "6.2L V8", "2.7L Turbocharged 4-Cylinder")
-- doors: number of doors as a string
-- mpg_city: city fuel economy (e.g. "18")
-- mpg_highway: highway fuel economy (e.g. "24")
-- availability: "In Stock" or "On Order" or "In Transit"
-- certified: true if Certified Pre-Owned / CPO, false otherwise
-- description: any marketing description or feature highlights shown
-- image_url: full URL of the primary vehicle photo
+- transmission: (e.g. "10-Speed Automatic", "6-Speed Manual")
+- drivetrain: (e.g. "4WD", "AWD", "FWD", "RWD")
+- fuel_type: (e.g. "Gasoline", "Electric", "Hybrid", "Diesel")
+- engine: (e.g. "6.2L V8", "2.7L Turbocharged 4-Cylinder")
+- doors: number of doors
+- mpg_city: city MPG if shown
+- mpg_highway: highway MPG if shown
+- availability: "In Stock", "On Order", or "In Transit"
+- certified: true if this is a Certified Pre-Owned vehicle, false otherwise
+- description: any marketing description or feature highlights shown on the card
+- image_url: full URL of the primary vehicle photo shown on the card
 - video_url: full URL of any vehicle video if present
-- detail_page_url: full URL to this vehicle's individual detail/VDP page
+- detail_page_url: full absolute URL to this vehicle's individual detail page (VDP)
 """
 
 
-def scrape_inventory(url: str, dealer_name: str) -> list[dict]:
+def scrape_srp(app: FirecrawlApp, url: str, condition_label: str) -> list[dict]:
+    """Scrape a single Search Results Page and return raw vehicle dicts."""
+    try:
+        result = app.scrape(
+            url,
+            formats=[JsonFormat(type="json", prompt=EXTRACT_PROMPT, schema=VEHICLE_SCHEMA)],
+            wait_for=3000,   # wait 3s for JS-rendered inventory to load
+            only_main_content=False,
+        )
+        extracted = result.json if hasattr(result, "json") and result.json else {}
+        vehicles  = extracted.get("vehicles", []) if isinstance(extracted, dict) else []
+        print(f"    {condition_label:<22} {url}  →  {len(vehicles)} vehicles")
+        return vehicles
+    except Exception as e:
+        print(f"    {condition_label:<22} {url}  →  SKIPPED ({e})")
+        return []
+
+
+def scrape_inventory(base_url: str, dealer_name: str) -> list[dict]:
     app = FirecrawlApp(api_key=FIRECRAWL_API_KEY)
-    print(f"\n[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] Scraping {dealer_name}: {url}")
+    print(f"\n[{datetime.now(timezone.utc).strftime('%H:%M:%S')}] {dealer_name}")
 
-    scrape_opts = ScrapeOptions(
-        formats=[JsonFormat(type="json", prompt=EXTRACT_PROMPT, schema=VEHICLE_SCHEMA)]
-    )
+    all_vehicles = []
+    for path, condition_label in INVENTORY_PATHS:
+        url = base_url.rstrip("/") + path
+        all_vehicles.extend(scrape_srp(app, url, condition_label))
 
-    result = app.crawl(
-        url,
-        limit=CRAWL_LIMIT,
-        include_paths=["/inventory*"],
-        scrape_options=scrape_opts,
-    )
-
-    vehicles = []
-    for page in result.data:
-        extracted = page.json if hasattr(page, "json") and page.json else {}
-        if isinstance(extracted, dict):
-            vehicles.extend(extracted.get("vehicles", []))
-
-    print(f"  → {len(vehicles)} vehicles scraped across {len(result.data)} pages")
-    return vehicles
+    print(f"  → {len(all_vehicles)} total vehicles scraped")
+    return all_vehicles
 
 
 # ─── TRANSFORM ────────────────────────────────────────────────────────────────
 def normalize_condition(raw: str, certified: bool = False) -> str:
-    """Maps New / Used / CPO → Meta's supported values: new or used."""
     if certified:
-        return "used"  # CPO is "used" per Meta spec
+        return "used"   # CPO = used per Meta spec
     if not raw:
         return "used"
     return "new" if "new" in raw.lower() else "used"
@@ -156,10 +168,7 @@ def normalize_condition(raw: str, certified: bool = False) -> str:
 def normalize_availability(raw: str) -> str:
     if not raw:
         return "in stock"
-    raw_lower = raw.lower()
-    if "out" in raw_lower or "sold" in raw_lower:
-        return "out of stock"
-    return "in stock"
+    return "out of stock" if ("out" in raw.lower() or "sold" in raw.lower()) else "in stock"
 
 
 def format_price(amount) -> str:
@@ -170,69 +179,50 @@ def format_price(amount) -> str:
 
 
 def build_title(v: dict) -> str:
-    """Year Make Model Trim — up to 200 chars."""
-    parts = [v.get("year", ""), v.get("make", ""), v.get("model", ""), v.get("trim", "")]
+    parts = [v.get("year",""), v.get("make",""), v.get("model",""), v.get("trim","")]
     return " ".join(p for p in parts if p).strip()[:200]
 
 
 def build_description(v: dict) -> str:
-    """
-    Rich description packed with all vehicle details.
-    Uses scraped marketing copy if available, then appends spec details.
-    """
     base = v.get("description", "").strip()
 
     specs = []
-    condition_label = v.get("condition", "")
-    if v.get("certified"):
-        condition_label = "Certified Pre-Owned"
+    condition_label = "Certified Pre-Owned" if v.get("certified") else (v.get("condition") or "")
     if condition_label:
         specs.append(condition_label)
 
     year, make, model, trim = v.get("year",""), v.get("make",""), v.get("model",""), v.get("trim","")
     if year and make and model:
-        ymmt = f"{year} {make} {model}"
-        if trim:
-            ymmt += f" {trim}"
+        ymmt = f"{year} {make} {model}" + (f" {trim}" if trim else "")
         specs.append(ymmt)
 
-    if v.get("body_style"):
-        specs.append(v["body_style"])
-    if v.get("exterior_color"):
-        specs.append(f"Exterior: {v['exterior_color']}")
-    if v.get("interior_color"):
-        specs.append(f"Interior: {v['interior_color']}")
-    if v.get("engine"):
-        specs.append(f"Engine: {v['engine']}")
-    if v.get("transmission"):
-        specs.append(f"Transmission: {v['transmission']}")
-    if v.get("drivetrain"):
-        specs.append(f"Drivetrain: {v['drivetrain']}")
-    if v.get("fuel_type"):
-        specs.append(f"Fuel: {v['fuel_type']}")
-    if v.get("mileage"):
-        specs.append(f"Mileage: {v['mileage']} miles")
-    if v.get("mpg_city") and v.get("mpg_highway"):
-        specs.append(f"MPG: {v['mpg_city']} city / {v['mpg_highway']} hwy")
-    if v.get("doors"):
-        specs.append(f"{v['doors']}-door")
-    if v.get("stock_number"):
-        specs.append(f"Stock #: {v['stock_number']}")
-    if v.get("vin"):
-        specs.append(f"VIN: {v['vin']}")
+    for label, field in [
+        ("Body",         "body_style"),
+        ("Exterior",     "exterior_color"),
+        ("Interior",     "interior_color"),
+        ("Engine",       "engine"),
+        ("Transmission", "transmission"),
+        ("Drivetrain",   "drivetrain"),
+        ("Fuel",         "fuel_type"),
+        ("Mileage",      None),
+        ("MPG",          None),
+        ("Doors",        "doors"),
+        ("Stock #",      "stock_number"),
+        ("VIN",          "vin"),
+    ]:
+        if label == "Mileage" and v.get("mileage"):
+            specs.append(f"Mileage: {v['mileage']} miles")
+        elif label == "MPG" and v.get("mpg_city") and v.get("mpg_highway"):
+            specs.append(f"MPG: {v['mpg_city']} city / {v['mpg_highway']} hwy")
+        elif field and v.get(field):
+            specs.append(f"{label}: {v[field]}")
 
     spec_block = " | ".join(specs)
-
-    if base:
-        combined = f"{base} | {spec_block}" if spec_block else base
-    else:
-        combined = spec_block
-
+    combined = f"{base} | {spec_block}" if base and spec_block else (base or spec_block)
     return combined[:9999]
 
 
 def build_item_group_id(v: dict) -> str:
-    """Groups trim variants of the same Year/Make/Model together."""
     year  = (v.get("year")  or "").strip()
     make  = (v.get("make")  or "").strip().replace(" ", "-")
     model = (v.get("model") or "").strip().replace(" ", "-")
@@ -260,10 +250,8 @@ def transform_vehicles(raw_vehicles: list[dict], dealer_name: str) -> list[dict]
             continue
 
         certified = bool(v.get("certified"))
-
-        # product_tags: body style + drivetrain (most useful for vehicle filtering in Meta)
-        tag0 = (v.get("body_style") or "").strip()
-        tag1 = (v.get("drivetrain") or v.get("fuel_type") or "").strip()
+        tag0 = (v.get("body_style")  or "").strip()[:110]
+        tag1 = (v.get("drivetrain")  or v.get("fuel_type") or "").strip()[:110]
 
         transformed.append({
             "id":                           vid,
@@ -292,8 +280,8 @@ def transform_vehicles(raw_vehicles: list[dict], dealer_name: str) -> list[dict]
             "video[0].url":                 (v.get("video_url") or "").strip(),
             "video[0].tag[0]":              "",
             "gtin":                         "",
-            "product_tags[0]":              tag0[:110],
-            "product_tags[1]":              tag1[:110],
+            "product_tags[0]":              tag0,
+            "product_tags[1]":              tag1,
             "style[0]":                     "",
         })
 
@@ -321,16 +309,16 @@ def main():
     os.makedirs(OUTPUT_DIR, exist_ok=True)
     summary = []
 
-    for dealer_name, inventory_url, output_filename in DEALERSHIPS:
+    for dealer_name, base_url, output_filename in DEALERSHIPS:
         output_path = os.path.join(OUTPUT_DIR, output_filename)
         try:
-            raw      = scrape_inventory(inventory_url, dealer_name)
+            raw      = scrape_inventory(base_url, dealer_name)
             vehicles = transform_vehicles(raw, dealer_name)
             build_csv_feed(vehicles, output_path)
             summary.append((dealer_name, len(vehicles), "OK"))
         except Exception as e:
             import traceback
-            print(f"  ERROR scraping {dealer_name}: {e}")
+            print(f"  ERROR: {dealer_name}: {e}")
             traceback.print_exc()
             summary.append((dealer_name, 0, f"FAILED: {e}"))
 

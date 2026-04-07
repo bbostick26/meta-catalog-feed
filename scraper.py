@@ -137,7 +137,8 @@ def discover_vdp_urls(app: FirecrawlApp, base_url: str) -> list[str]:
         section_url = base_url.rstrip("/") + section
         try:
             result = app.map(section_url, limit=500)
-            urls = result.links if hasattr(result, "links") else []
+            raw_links = result.links if hasattr(result, "links") else []
+            urls = [lr.url for lr in raw_links if hasattr(lr, "url")]
             vdps = [u for u in urls if is_vdp_url(u, base_url)]
             print(f"    {section:<30} {len(vdps)} VDPs found")
             all_urls.extend(vdps)

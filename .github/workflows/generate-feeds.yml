@@ -1,0 +1,71 @@
+name: Generate Meta Catalog Feeds
+
+on:
+  schedule:
+    # Runs daily at 7:00 AM EST (12:00 UTC)
+    - cron: "0 12 * * *"
+  workflow_dispatch: # Allow manual trigger from GitHub UI
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+
+jobs:
+  generate:
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+
+      - name: Install dependencies
+        run: pip install -r requirements.txt
+
+      - name: Run scraper
+        env:
+          FIRECRAWL_API_KEY: ${{ secrets.FIRECRAWL_API_KEY }}
+        run: python scraper.py
+
+      - name: Commit and push updated feeds
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git add feeds/
+          if git diff --cached --quiet; then
+            echo "No feed changes to commit."
+          else
+            git commit -m "chore: update catalog feeds $(date -u +'%Y-%m-%d %H:%M UTC')"
+            git push
+          fi
+
+  deploy-pages:
+    needs: generate
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Setup Pages
+        uses: actions/configure-pages@v4
+
+      - name: Upload feeds as Pages artifact
+        uses: actions/upload-pages-artifact@v3
+        with:
+          path: feeds/
+
+      - name: Deploy to GitHub Pages
+        id: deployment
+        uses: actions/deploy-pages@v4

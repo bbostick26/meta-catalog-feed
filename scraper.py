@@ -15,13 +15,7 @@ from firecrawl import FirecrawlApp
 # ─── DEALERSHIPS ──────────────────────────────────────────────────────────────
 DEALERSHIPS = [
     ("Parks Buick GMC",               "https://www.parksbuickgmc.com",               "parks_buick_gmc.csv"),
-    ("Parks Chevy Spartanburg",        "https://www.parkschevroletspartanburg.com",   "parks_chevy_spartanburg.csv"),
-    ("Parks Chevy Charlotte",          "https://www.parkscharlotte.com",              "parks_chevy_charlotte.csv"),
-    ("Parks Chevrolet Huntersville",   "https://www.parkschevrolethuntersville.com",  "parks_chevrolet_huntersville.csv"),
-    ("Parks Chevy Kernersville",       "https://www.parkschevy.com",                 "parks_chevy_kernersville.csv"),
-    ("Parks Ford Hendersonville",      "https://www.parksfordhendersonville.com",     "parks_ford_hendersonville.csv"),
-    ("Parks Richmond",                 "https://www.parksrichmond.com",               "parks_richmond.csv"),
-    ("Lake Norman CDJR",               "https://www.lakenormanchrysler.com",          "lake_norman_cdjr.csv"),
+  
 ]
 
 # ─── CONFIG ───────────────────────────────────────────────────────────────────

@@ -14,7 +14,7 @@ from firecrawl import FirecrawlApp
 
 # ─── DEALERSHIPS ──────────────────────────────────────────────────────────────
 DEALERSHIPS = [
-    ("Parks Buick GMC",               "https://www.parksbuickgmc.com",               "parks_buick_gmc.csv"),
+    (,
   
 ]
 
